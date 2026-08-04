@@ -61,6 +61,3 @@ echo "✅ KÉSZ! MINDEN TELEPÍTVE."
 echo "Indítsd újra a gépet a következő paranccsal: reboot"
 echo "=================================================="
 EOF
-
-chmod +x /root/testpi/finish_install.sh
-bash /root/testpi/finish_install.sh
