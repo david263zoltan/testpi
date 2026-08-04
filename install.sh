@@ -1,12 +1,11 @@
-cat << 'INSTALLER_EOF' > /root/testpi/Installer.sh
 #!/bin/bash
 set -e
 
 echo "=================================================="
-echo "🚀 JARVIS NODE OS v8.0 - ALL-IN-ONE (7-ZIP + SYSTEMD)"
+echo "🚀 JARVIS NODE OS v8.1 - ALL-IN-ONE (install.sh)"
 echo "=================================================="
 
-SCRIPT_DIR="/root/testpi"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/pi_node"
 PYTHON_VERSION="3.12.3"
 
@@ -89,7 +88,7 @@ FW
 chmod +x "$SCRIPT_DIR/upload_kinect_fw.sh"
 
 cat << 'EOF_RULES' > /etc/udev/rules.d/55-kinect-audio-fw.rules
-ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02ad", RUN+="/root/testpi/upload_kinect_fw.sh"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02ad", RUN+="/usr/local/bin/kinect_upload_fw /lib/firmware/kinect/UACFirmware"
 EOF_RULES
 udevadm control --reload-rules && udevadm trigger
 
@@ -220,7 +219,7 @@ if __name__ == "__main__":
 SENDER_PY
 
 echo "[9/10] Rendszerszolgáltatás (Systemd) beállítása..."
-cat << 'SYSTEMD' > /etc/systemd/system/jarvis_node.service
+cat << SYSTEMD > /etc/systemd/system/jarvis_node.service
 [Unit]
 Description=Jarvis Kinect Node Service
 After=network.target network-online.target
@@ -228,8 +227,8 @@ After=network.target network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/testpi/pi_node
-ExecStart=/root/testpi/pi_node/env/bin/python /root/testpi/pi_node/sender.py
+WorkingDirectory=$PROJECT_DIR
+ExecStart=$PROJECT_DIR/env/bin/python $PROJECT_DIR/sender.py
 Restart=always
 RestartSec=5
 
@@ -241,12 +240,9 @@ systemctl daemon-reload
 systemctl enable jarvis_node.service
 systemctl start jarvis_node.service
 
-# Töröljük a régi crontab-ot, mert már systemd-t használunk
 crontab -r 2>/dev/null || true
 
 echo "=================================================="
 echo "✅ MINDEN KÉSZ ÉS A SZERVER MÁR FUT!"
 echo "Ellenőrizd a böngésződben: http://<RASPBERRY_IP>:5000"
 echo "=================================================="
-INSTALLER_EOF
-
