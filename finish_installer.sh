@@ -1,34 +1,37 @@
-cat << 'EOF' > /root/testpi/resume_install.sh
+cat << 'EOF' > /root/testpi/finish_install.sh
 #!/bin/bash
 set -e
 
 echo "=================================================="
-echo "🚀 JARVIS NODE OS - TELEPÍTÉS FOLYTATÁSA (PART 2)"
+echo "🚀 JARVIS NODE OS - TELEPÍTÉS BEFEJEZÉSE (7-ZIP)"
 echo "=================================================="
 
 SCRIPT_DIR="/root/testpi"
 PROJECT_DIR="$SCRIPT_DIR/pi_node"
 PYTHON_VERSION="3.12.3"
 
-# Betöltjük a már lefordított Pyenv-et
+# Betöltjük a Pyenv-et
 export PYENV_ROOT="/root/.pyenv"
 export PATH="$PYENV_ROOT/bin:$PATH"
 eval "$(pyenv init -)"
 pyenv global $PYTHON_VERSION
 
-echo "[5/9] 🎮 Kinect Firmware letöltése (Javított, látható letöltés)..."
+echo "[5/9] 🎮 Kinect Firmware kinyerése 7-Zip segítségével..."
+apt-get install -y p7zip-full
 mkdir -p /lib/firmware/kinect
 cd /tmp
-rm -f KinectSDK.msi # Töröljük a sérült fájlt
+rm -f KinectSDK.msi UACFirmware*
 
 FW_URL="https://download.microsoft.com/download/F/9/9/F99791F2-D5BE-478A-B77A-830AD14950C3/KinectSDK-v1.0-beta2-x86.msi"
-# A -c kapcsoló folytatja a letöltést, a --tries=5 pedig újrapróbálja, ha megszakad
-wget -c --tries=5 "$FW_URL" -O /tmp/KinectSDK.msi
+wget -c "$FW_URL" -O KinectSDK.msi
 
-cabextract /tmp/KinectSDK.msi -F "UACFirmware.*" -d /tmp/
-mv /tmp/UACFirmware.* /lib/firmware/kinect/UACFirmware
-rm -f /tmp/KinectSDK.msi
-echo "✅ Firmware kicsomagolva és a helyén."
+# ITT A VARÁZSLAT, amire emlékeztél:
+7z e KinectSDK.msi "UACFirmware.*" -r
+
+mv UACFirmware.* /lib/firmware/kinect/UACFirmware
+chmod 644 /lib/firmware/kinect/UACFirmware
+rm -f KinectSDK.msi
+echo "✅ Firmware sikeresen kicsomagolva és a helyére másolva!"
 
 echo "[6/9] 🔧 Virtuális környezet beállítása..."
 mkdir -p "$PROJECT_DIR"
@@ -58,3 +61,6 @@ echo "✅ KÉSZ! MINDEN TELEPÍTVE."
 echo "Indítsd újra a gépet a következő paranccsal: reboot"
 echo "=================================================="
 EOF
+
+chmod +x /root/testpi/finish_install.sh
+bash /root/testpi/finish_install.sh
