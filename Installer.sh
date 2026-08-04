@@ -1,4 +1,3 @@
-cat << 'EOF' > /root/testpi/Installer.sh
 #!/bin/bash
 
 # Hiba esetén álljon meg
