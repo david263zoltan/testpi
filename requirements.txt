@@ -1,5 +1,0 @@
-﻿cython
-pyzmq
-opencv-python
-pyaudio
-flask
