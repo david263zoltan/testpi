@@ -19,7 +19,6 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r") as f:
                 cfg = json.load(f)
-                # Alapértelmezett értékek ha hiányoznának
                 cfg.setdefault("pc_ip", "192.168.1.140")
                 cfg.setdefault("port", 5555)
                 cfg.setdefault("video_active", True)
@@ -31,6 +30,7 @@ def load_config():
 def save_config(data):
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f, indent=4)
+    reconnect_event.set()
 
 # --- FLASK WEBADMIN ---
 app = Flask(__name__)
@@ -52,7 +52,7 @@ HTML_UI = """
     </style>
 </head>
 <body>
-    <h1>🛰️ Jarvis Node v6.5</h1>
+    <h1>🛰️ Jarvis Node v6.7</h1>
     
     <div class="card">
         <h3>Hálózati Beállítások</h3>
@@ -98,7 +98,6 @@ def save_ip():
     config = load_config()
     config['pc_ip'] = request.form.get('pc_ip')
     save_config(config)
-    reconnect_event.set() # Streamer újraindítása az új IP-vel
     return redirect('/')
 
 @app.route('/toggle/<stream_type>')
@@ -119,29 +118,32 @@ def run_web_server():
 def streamer_loop():
     # 1. Firmware feltöltés
     try:
-        subprocess.run(["sudo", "kinect_upload_fw", "/lib/firmware/kinect/UACFirmware"], check=False)
+        subprocess.run(["sudo", "/usr/local/bin/kinect_upload_fw", "/lib/firmware/kinect/UACFirmware"], check=False)
+        time.sleep(1) # Várunk, hogy az ALSA regisztrálja a kártyát
     except: pass
 
     ctx = zmq.Context()
-    socket = None
-    
-    # Audio inicializálás
     p = pyaudio.PyAudio()
-    audio_stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
+    audio_stream = None
+
+    def get_audio_stream():
+        """Hibatűrő mikrofon nyitás"""
+        try:
+            return p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
+        except Exception as err:
+            print(f"[AUDIO WARNING] Mikrofon nem érhető el: {err}")
+            return None
 
     def create_socket():
         cfg = load_config()
         s = ctx.socket(zmq.PUB)
-        target = f"tcp://{cfg['pc_ip']}:{cfg['port']}"
-        print(f"[STREAM] Csatlakozás a PC-hez: {target}")
-        s.connect(target)
+        s.connect(f"tcp://{cfg['pc_ip']}:{cfg['port']}")
         return s
 
     socket = create_socket()
     print("[STREAM] Adatküldő üzemkész...")
 
     while True:
-        # Konfiguráció frissítése a ciklus elején
         cfg = load_config()
 
         if reconnect_event.is_set():
@@ -149,28 +151,37 @@ def streamer_loop():
             socket = create_socket()
             reconnect_event.clear()
 
+        # Megpróbáljuk megnyitni a mikrofont, ha aktív, de még nincs megnyitva
+        if cfg['audio_active'] and audio_stream is None:
+            audio_stream = get_audio_stream()
+
         try:
             # --- VIDEÓ RÉSZ ---
             if cfg['video_active']:
-                video = freenect.sync_get_video()[0]
-                depth = freenect.sync_get_depth()[0]
-                
-                # Tömörítés és küldés
-                _, img_enc = cv2.imencode('.jpg', video, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                socket.send_multipart([b"video", img_enc.tobytes()])
-                socket.send_multipart([b"depth", depth.tobytes()])
-            
+                try:
+                    v_data = freenect.sync_get_video()
+                    d_data = freenect.sync_get_depth()
+                    if v_data and d_data:
+                        _, img_enc = cv2.imencode('.jpg', v_data[0], [cv2.IMWRITE_JPEG_QUALITY, 70])
+                        socket.send_multipart([b"video", img_enc.tobytes()])
+                        socket.send_multipart([b"depth", d_data[0].tobytes()])
+                except Exception as v_err:
+                    print(f"[VIDEO ERROR] Kinect videó hiba: {v_err}")
+
             # --- AUDIÓ RÉSZ ---
-            if cfg['audio_active']:
-                audio_data = audio_stream.read(1024, exception_on_overflow=False)
-                socket.send_multipart([b"audio", audio_data])
-            
-            # Ha egyik sem aktív, kicsit pihentetjük a processzort
+            if cfg['audio_active'] and audio_stream is not None:
+                try:
+                    audio_data = audio_stream.read(1024, exception_on_overflow=False)
+                    socket.send_multipart([b"audio", audio_data])
+                except Exception as a_err:
+                    print(f"[AUDIO ERROR] Mikrofon olvasási hiba: {a_err}")
+                    audio_stream = None # Ha megszakad, újrapróbáljuk a következő körben
+
             if not cfg['video_active'] and not cfg['audio_active']:
                 time.sleep(0.5)
 
         except Exception as e:
-            print(f"[ERROR] Hiba: {e}")
+            print(f"[ERROR] Stream hiba: {e}")
             time.sleep(1)
 
         time.sleep(0.01)
