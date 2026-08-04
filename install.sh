@@ -1,4 +1,95 @@
 #!/bin/bash
+# JARVIS NODE OS v7.1 - Trixie 13 Stable Fix
+set -e
+
+echo "=================================================="
+echo "🚀 JARVIS NODE OS v7.1 - RASPBERRY PI INSTALLER"
+echo "=================================================="
+
+if [ "$EUID" -ne 0 ]; then 
+    echo "❌ Hiba: Root jogokra van szükség!"
+    exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="${SCRIPT_DIR}/pi_node"
+PYTHON_VERSION="3.12.3"
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_HOME=$(eval echo ~$REAL_USER)
+
+echo "[1/9] 🔄 Alapcsomagok telepítése (kinect-audio-setup nélkül)..."
+apt-get update
+# Kivettük a kinect-audio-setupot, hozzáadtuk a libusb-t a fordításhoz
+apt-get install -y git cmake build-essential libusb-1.0-0-dev \
+libfreenect-dev python3-dev cython3 libportaudio2 portaudio19-dev \
+cabextract wget curl llvm libssl-dev zlib1g-dev \
+libbz2-dev libreadline-dev libsqlite3-dev libncurses-dev xz-utils \
+tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev libasound2-dev
+
+echo "[2/9] 🐍 Pyenv telepítése..."
+if [ ! -d "${REAL_HOME}/.pyenv" ]; then
+    sudo -u "$REAL_USER" bash -c 'curl https://pyenv.run | bash'
+fi
+
+# Környezet beállítása
+export PYENV_ROOT="${REAL_HOME}/.pyenv"
+export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
+
+echo "[3/9] 📦 Python $PYTHON_VERSION fordítása..."
+sudo -u "$REAL_USER" bash -c "export PYENV_ROOT='$PYENV_ROOT'; export PATH='\$PYENV_ROOT/bin:\$PATH'; eval \"\$(pyenv init -)\"; pyenv install -s $PYTHON_VERSION; pyenv global $PYTHON_VERSION"
+
+echo "[4/9] 🔌 Kinect udev szabályok..."
+cat > /etc/udev/rules.d/51-kinect.rules << 'UDEV'
+SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02ae", MODE="0666"
+SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02ad", MODE="0666"
+SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02b0", MODE="0666"
+SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02be", MODE="0666"
+SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02bf", MODE="0666"
+UDEV
+udevadm control --reload-rules && udevadm trigger
+
+echo "[5/9] 🎮 Kinect Firmware és Feltöltő készítése..."
+# Kézzel lefordítjuk az uploadert, mert nem telepítettük a rossz csomagot
+cd /tmp
+git clone https://github.com/avinlobo/kinect_setup.git || true
+cd kinect_setup
+gcc kinect_upload_fw.c -o kinect_upload_fw -lusb-1.0
+cp kinect_upload_fw /usr/local/bin/
+
+# Firmware kinyerése
+mkdir -p /lib/firmware/kinect
+FW_URL="https://download.microsoft.com/download/F/9/9/F99791F2-D5BE-478A-B77A-830AD14950C3/KinectSDK-v1.0-beta2-x86.msi"
+wget -q "$FW_URL" -O /tmp/KinectSDK.msi
+cabextract /tmp/KinectSDK.msi -F "UACFirmware.*" -d /tmp/
+mv /tmp/UACFirmware.* /lib/firmware/kinect/UACFirmware
+chmod 644 /lib/firmware/kinect/UACFirmware
+
+# Feltöltő script
+cat > "${SCRIPT_DIR}/upload_kinect_fw.sh" << 'FW'
+#!/bin/bash
+/usr/local/bin/kinect_upload_fw /lib/firmware/kinect/UACFirmware || true
+FW
+chmod +x "${SCRIPT_DIR}/upload_kinect_fw.sh"
+
+echo "[6/9] 🔧 Virtuális környezet..."
+mkdir -p "$PROJECT_DIR"
+sudo -u "$REAL_USER" bash -c "export PYENV_ROOT='$PYENV_ROOT'; export PATH='\$PYENV_ROOT/shims:\$PYENV_ROOT/bin:\$PATH'; cd '$PROJECT_DIR'; python -m venv env"
+
+echo "[7/9] 📚 Python csomagok..."
+sudo -u "$REAL_USER" bash -c "source '$PROJECT_DIR/env/bin/activate'; pip install --upgrade pip setuptools wheel; pip install 'cython==0.29.37' 'numpy==1.26.4'; pip install 'pyzmq' 'opencv-python-headless==4.9.0.80' 'pyaudio' 'flask' 'duckduckgo-search'"
+
+echo "[8/9] 🔨 Libfreenect driver..."
+cd "$SCRIPT_DIR"
+git clone https://github.com/OpenKinect/libfreenect.git || true
+cd libfreenect/wrappers/python
+rm -rf build/ freenect.c || true
+sudo -u "$REAL_USER" bash -c "source '$PROJECT_DIR/env/bin/activate'; python setup.py install"
+
+echo "[9/9] ⏰ Autostart (Crontab)..."
+sudo -u "$REAL_USER" bash -c "(crontab -l 2>/dev/null | grep -v 'sender.py'; echo '@reboot cd $PROJECT_DIR && $PROJECT_DIR/env/bin/python $PROJECT_DIR/sender.py >> $SCRIPT_DIR/jarvis_node.log 2>&1') | crontab -"
+
+echo "✅ TELEPÍTÉS KÉSZ! Reboot ajánlott."#!/bin/bash
 
 # JARVIS NODE OS v7.0 - Raspberry Pi OS Lite Trixie 13 Installer
 # Sudo kompatibilis
