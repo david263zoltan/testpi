@@ -40,17 +40,11 @@ echo ""
 # Step 1: Rendszer frissítése
 echo "[1/9] 🔄 Rendszer frissítése és alapcsomagok telepítése..."
 apt-get update
-apt-get install -y \
-    git cmake build-essential \
-    libusb-1.0-0-dev libusb-1.0-0 \
-    python3-dev python3-pip python3-venv \
-    portaudio19-dev libasound2-dev \
-    libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
-    libsqlite3-dev libncurses-dev xz-utils tk-dev \
-    libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev \
-    wget curl llvm cabextract pkg-config \
-    libopenjp2-7 libtiff6 libatlas-base-dev libjasper-dev \
-    libjasper1 libharfbuzz0b libwebp6 libtiff5 libwebp6
+apt-get install -y git cmake build-essential libusb-1.0-0-dev \
+libfreenect-dev python3-dev cython3 libportaudio2 portaudio19-dev \
+kinect-audio-setup cabextract wget curl llvm libssl-dev zlib1g-dev \
+libbz2-dev libreadline-dev libsqlite3-dev libncurses-dev xz-utils \
+tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev libasound2-dev
 
 # Step 2: Pyenv telepítése (a $REAL_USER-hez)
 echo ""
