@@ -1,9 +1,9 @@
 #!/bin/bash
-# JARVIS NODE OS v7.5 - BEÉPÍTETT C KÓD FIX
+# JARVIS NODE OS v7.6 - PYENV PATH FIX
 set -e
 
 echo "=================================================="
-echo "🚀 JARVIS NODE OS v7.5 - RASPBERRY PI INSTALLER"
+echo "🚀 JARVIS NODE OS v7.6 - RASPBERRY PI INSTALLER"
 echo "=================================================="
 
 if [ "$EUID" -ne 0 ]; then 
@@ -27,20 +27,40 @@ libbz2-dev libreadline-dev libsqlite3-dev libncurses-dev xz-utils \
 tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev libasound2-dev
 
 echo "[2/9] 🐍 Pyenv környezet beállítása..."
-export PYENV_ROOT="$PYENV_ROOT"
-export PATH="$PYENV_ROOT/bin:$PATH"
 if [ ! -d "$PYENV_ROOT" ]; then
     sudo -u "$REAL_USER" bash -c 'curl https://pyenv.run | bash'
 fi
-if command -v pyenv > /dev/null; then
-    eval "$(pyenv init -)"
+
+# Pyenv elérési utak rögzítése a jövőbeli újraindításokhoz
+if ! grep -q "PYENV_ROOT" "${REAL_HOME}/.bashrc"; then
+    echo "export PYENV_ROOT=\"$PYENV_ROOT\"" >> "${REAL_HOME}/.bashrc"
+    echo "export PATH=\"\$PYENV_ROOT/bin:\$PATH\"" >> "${REAL_HOME}/.bashrc"
+    echo "eval \"\$($PYENV_ROOT/bin/pyenv init -)\"" >> "${REAL_HOME}/.bashrc"
 fi
 
-echo "[3/9] 📦 Python $PYTHON_VERSION állapot ellenőrzése..."
-if [ ! -d "$PYENV_ROOT/versions/$PYTHON_VERSION" ]; then
-    sudo -u "$REAL_USER" bash -c "pyenv install -s $PYTHON_VERSION"
+echo "[3/9] 📦 Python $PYTHON_VERSION fordítása (Ez eltarthat egy ideig)..."
+# Egy ideiglenes szkriptet csinálunk, hogy a subshell garantáltan lássa a Pyenv-et
+cat > /tmp/jarvis_pyenv_install.sh << EOF
+#!/bin/bash
+set -e
+export PYENV_ROOT="$PYENV_ROOT"
+export PATH="\$PYENV_ROOT/bin:\$PATH"
+eval "\$(\$PYENV_ROOT/bin/pyenv init -)"
+if [ ! -d "\$PYENV_ROOT/versions/$PYTHON_VERSION" ]; then
+    pyenv install -s $PYTHON_VERSION
 fi
 pyenv global $PYTHON_VERSION
+EOF
+
+chmod +x /tmp/jarvis_pyenv_install.sh
+chown "$REAL_USER" /tmp/jarvis_pyenv_install.sh
+# Futtatjuk az ideiglenes szkriptet
+sudo -u "$REAL_USER" bash /tmp/jarvis_pyenv_install.sh
+rm -f /tmp/jarvis_pyenv_install.sh
+
+# Beállítjuk a fő szkriptben is a path-t a továbbiakhoz
+export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$($PYENV_ROOT/bin/pyenv init -)"
 
 echo "[4/9] 🔌 Kinect udev szabályok..."
 cat > /etc/udev/rules.d/51-kinect.rules << 'UDEV'
@@ -56,7 +76,6 @@ echo "[5/9] 🎮 Kinect Firmware és Feltöltő (BEÉPÍTETT FORRÁSKÓDBÓL)...
 mkdir -p /lib/firmware/kinect
 cd /tmp
 
-# 1. Közvetlenül legeneráljuk a C kódot (nincs szükség letöltésre!)
 cat > kinect_upload_fw.c << 'EOF_C'
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,23 +108,28 @@ int main(int argc, char *argv[]) {
 }
 EOF_C
 
-# 2. Lefordítjuk a C kódot
 gcc kinect_upload_fw.c -o kinect_upload_fw -lusb-1.0
 cp kinect_upload_fw /usr/local/bin/
 chmod +x /usr/local/bin/kinect_upload_fw
 
-# 3. Microsoft Firmware kinyerése (Ez az URL hivatalos, még él)
 FW_URL="https://download.microsoft.com/download/F/9/9/F99791F2-D5BE-478A-B77A-830AD14950C3/KinectSDK-v1.0-beta2-x86.msi"
-wget -q "$FW_URL" -O /tmp/KinectSDK.msi
-cabextract /tmp/KinectSDK.msi -F "UACFirmware.*" -d /tmp/
-mv /tmp/UACFirmware.* /lib/firmware/kinect/UACFirmware
-rm -f /tmp/KinectSDK.msi
+if [ ! -f /lib/firmware/kinect/UACFirmware ]; then
+    wget -q "$FW_URL" -O /tmp/KinectSDK.msi
+    cabextract /tmp/KinectSDK.msi -F "UACFirmware.*" -d /tmp/
+    mv /tmp/UACFirmware.* /lib/firmware/kinect/UACFirmware
+    rm -f /tmp/KinectSDK.msi
+fi
 
 cat > "${SCRIPT_DIR}/upload_kinect_fw.sh" << 'FW'
 #!/bin/bash
 /usr/local/bin/kinect_upload_fw /lib/firmware/kinect/UACFirmware || true
 FW
 chmod +x "${SCRIPT_DIR}/upload_kinect_fw.sh"
+
+cat > /etc/udev/rules.d/55-kinect-audio-fw.rules << EOF
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02ad", RUN+="${SCRIPT_DIR}/upload_kinect_fw.sh"
+EOF
+udevadm control --reload-rules && udevadm trigger
 
 echo "[6/9] 🔧 Virtuális környezet..."
 mkdir -p "$PROJECT_DIR"
@@ -133,6 +157,6 @@ CRON_JOB="@reboot cd $PROJECT_DIR && $PROJECT_DIR/env/bin/python $PROJECT_DIR/se
 (sudo -u "$REAL_USER" crontab -l 2>/dev/null | grep -v "sender.py"; echo "$CRON_JOB") | sudo -u "$REAL_USER" crontab -
 
 echo "=================================================="
-echo "✅ KÉSZ! Nincs több halott link!"
+echo "✅ KÉSZ! Nincs több halott link és path hiba."
 echo "Indítsd újra a gépet: reboot"
 echo "=================================================="
