@@ -2,7 +2,7 @@
 set -e
 
 echo "=================================================="
-echo "🚀 JARVIS NODE OS v8.1 - ALL-IN-ONE (install.sh)"
+echo "🚀 JARVIS NODE OS v8.2 - COMPLETE WITH BLACKLIST"
 echo "=================================================="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,7 +12,14 @@ PYTHON_VERSION="3.12.3"
 export PYENV_ROOT="/root/.pyenv"
 export PATH="$PYENV_ROOT/bin:$PATH"
 
-echo "[1/10] Rendszerfüggőségek és 7-Zip telepítése..."
+echo "[1/11] Gyári zavaró Linux driverek letiltása (Blacklist)..."
+cat << 'MODPROBE' > /etc/modprobe.d/blacklist-kinect.conf
+blacklist gspca_kinect
+blacklist gspca_main
+MODPROBE
+modprobe -r gspca_kinect gspca_main 2>/dev/null || true
+
+echo "[2/11] Rendszerfüggőségek és 7-Zip telepítése..."
 apt-get update
 apt-get install -y git cmake build-essential libusb-1.0-0-dev \
 libfreenect-dev python3-dev cython3 libportaudio2 portaudio19-dev \
@@ -20,7 +27,7 @@ wget curl llvm libssl-dev zlib1g-dev p7zip-full \
 libbz2-dev libreadline-dev libsqlite3-dev libncurses-dev xz-utils \
 tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev libasound2-dev
 
-echo "[2/10] Pyenv és Python $PYTHON_VERSION beállítása..."
+echo "[3/11] Pyenv és Python $PYTHON_VERSION beállítása..."
 if [ ! -d "$PYENV_ROOT" ]; then
     curl https://pyenv.run | bash
 fi
@@ -28,7 +35,7 @@ eval "$(pyenv init -)"
 pyenv install -s "$PYTHON_VERSION"
 pyenv global "$PYTHON_VERSION"
 
-echo "[3/10] Kinect udev szabályok..."
+echo "[4/11] Kinect udev szabályok..."
 cat << 'UDEV' > /etc/udev/rules.d/51-kinect.rules
 SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02ae", MODE="0666"
 SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02ad", MODE="0666"
@@ -38,7 +45,7 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02bf", MODE="0666"
 UDEV
 udevadm control --reload-rules && udevadm trigger
 
-echo "[4/10] Kinect Firmware feltöltő C-kód fordítása..."
+echo "[5/11] Kinect Firmware feltöltő C-kód fordítása..."
 cd /tmp
 cat << 'C_CODE' > kinect_upload_fw.c
 #include <stdio.h>
@@ -71,7 +78,7 @@ gcc kinect_upload_fw.c -o kinect_upload_fw -lusb-1.0
 cp kinect_upload_fw /usr/local/bin/
 chmod +x /usr/local/bin/kinect_upload_fw
 
-echo "[5/10] Kinect Firmware kinyerése (7-Zip módszer)..."
+echo "[6/11] Kinect Firmware kinyerése (7-Zip)..."
 mkdir -p /lib/firmware/kinect
 cd /tmp
 rm -f KinectSDK.msi UACFirmware*
@@ -92,7 +99,7 @@ ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02ad"
 EOF_RULES
 udevadm control --reload-rules && udevadm trigger
 
-echo "[6/10] Python virtuális környezet és csomagok..."
+echo "[7/11] Python virtuális környezet és csomagok..."
 mkdir -p "$PROJECT_DIR"
 cd "$PROJECT_DIR"
 if [ ! -d "env" ]; then
@@ -103,14 +110,14 @@ pip install --upgrade pip setuptools wheel
 pip install "cython==0.29.37" "numpy==1.26.4"
 pip install pyzmq "opencv-python-headless<4.10" pyaudio flask
 
-echo "[7/10] Libfreenect driver fordítása..."
+echo "[8/11] Libfreenect driver fordítása..."
 cd "$SCRIPT_DIR"
 [ ! -d "libfreenect" ] && git clone https://github.com/OpenKinect/libfreenect.git
 cd libfreenect/wrappers/python
 rm -rf build/ freenect.c || true
 python setup.py install
 
-echo "[8/10] SENDER.PY fájl generálása..."
+echo "[9/11] SENDER.PY generálása (Intelligens USB észleléssel)..."
 cat << 'SENDER_PY' > "$PROJECT_DIR/sender.py"
 import freenect, zmq, cv2, numpy as np, pyaudio, time, json, os, subprocess, threading
 from flask import Flask, request, render_template_string, redirect
@@ -147,7 +154,7 @@ input{padding:10px;border-radius:5px;border:1px solid #333;background:#000;color
 .btn{padding:10px 20px;border-radius:5px;border:none;font-weight:bold;cursor:pointer;text-decoration:none;color:black;margin:10px;}
 .btn-save{background:#00adb5;}.btn-on{background:#28a745;color:white;}.btn-off{background:#dc3545;color:white;}</style>
 </head><body>
-<div class="card"><h1>🛰️ Jarvis Node v6.5</h1>
+<div class="card"><h1>🛰️ Jarvis Node v7.0</h1>
 <form action="/save_ip" method="post">
 <input type="text" name="pc_ip" value="{{ config.pc_ip }}"><button type="submit" class="btn btn-save">IP Mentése</button>
 </form><br>
@@ -177,40 +184,84 @@ def toggle_stream(stream_type):
 def run_web_server():
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
+def check_usb_devices():
+    try:
+        lsusb = subprocess.check_output("lsusb", shell=True).decode("utf-8")
+        cam_present = "045e:02ae" in lsusb
+        audio_bootloader = "045e:02ad" in lsusb
+        audio_ready = "045e:02be" in lsusb or "045e:02bf" in lsusb
+        return cam_present, audio_bootloader, audio_ready
+    except:
+        return False, False, False
+
 def streamer_loop():
-    try: subprocess.run(["sudo", "/usr/local/bin/kinect_upload_fw", "/lib/firmware/kinect/UACFirmware"], check=False)
-    except: pass
     ctx = zmq.Context()
     p = pyaudio.PyAudio()
-    audio_stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
-    
+    audio_stream = None
+    socket = None
+
     def create_socket():
         cfg = load_config()
         s = ctx.socket(zmq.PUB)
         s.connect(f"tcp://{cfg['pc_ip']}:{cfg['port']}")
         return s
-    
+
     socket = create_socket()
     print("[STREAM] Adatküldő üzemkész...")
-    
+
+    last_usb_check = 0
+    cam_ok, audio_bootloader, audio_ok = False, False, False
+
     while True:
         cfg = load_config()
+        now = time.time()
+
         if reconnect_event.is_set():
             socket.close(); socket = create_socket(); reconnect_event.clear()
-        try:
-            if cfg['video_active']:
+
+        # USB Eszközök ellenőrzése 3 mp-enként
+        if now - last_usb_check > 3.0:
+            cam_ok, audio_bootloader, audio_ok = check_usb_devices()
+            last_usb_check = now
+
+            if audio_bootloader and not audio_ok:
+                print("[KINECT ÉSZLELVE] Audio Bootloader megtalálva! Firmware feltöltése...")
+                try:
+                    subprocess.run(["sudo", "/usr/local/bin/kinect_upload_fw", "/lib/firmware/kinect/UACFirmware"], check=False)
+                    time.sleep(1)
+                except: pass
+
+        # Kamera küldés csak ha észlelve van
+        if cfg['video_active'] and cam_ok:
+            try:
                 v_data = freenect.sync_get_video()
                 d_data = freenect.sync_get_depth()
                 if v_data and d_data:
                     _, img_enc = cv2.imencode('.jpg', v_data[0], [cv2.IMWRITE_JPEG_QUALITY, 70])
                     socket.send_multipart([b"video", img_enc.tobytes()])
                     socket.send_multipart([b"depth", d_data[0].tobytes()])
-            if cfg['audio_active']:
-                audio_data = audio_stream.read(1024, exception_on_overflow=False)
-                socket.send_multipart([b"audio", audio_data])
-            if not cfg['video_active'] and not cfg['audio_active']: time.sleep(0.5)
-        except Exception as e:
-            print(f"[ERROR] Stream hiba: {e}"); time.sleep(1)
+            except:
+                cam_ok = False
+                time.sleep(0.5)
+
+        # Mikrofon küldés csak ha kész
+        if cfg['audio_active'] and audio_ok:
+            if audio_stream is None:
+                try:
+                    audio_stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
+                except: audio_stream = None
+
+            if audio_stream is not None:
+                try:
+                    audio_data = audio_stream.read(1024, exception_on_overflow=False)
+                    socket.send_multipart([b"audio", audio_data])
+                except: audio_stream = None
+        else:
+            audio_stream = None
+
+        if not cam_ok and not audio_bootloader:
+            time.sleep(0.5)
+
         time.sleep(0.01)
 
 if __name__ == "__main__":
@@ -218,7 +269,7 @@ if __name__ == "__main__":
     streamer_loop()
 SENDER_PY
 
-echo "[9/10] Rendszerszolgáltatás (Systemd) beállítása..."
+echo "[10/11] Systemd Szolgáltatás beállítása..."
 cat << SYSTEMD > /etc/systemd/system/jarvis_node.service
 [Unit]
 Description=Jarvis Kinect Node Service
@@ -240,9 +291,7 @@ systemctl daemon-reload
 systemctl enable jarvis_node.service
 systemctl start jarvis_node.service
 
-crontab -r 2>/dev/null || true
-
 echo "=================================================="
-echo "✅ MINDEN KÉSZ ÉS A SZERVER MÁR FUT!"
-echo "Ellenőrizd a böngésződben: http://<RASPBERRY_IP>:5000"
+echo "✅ TELEPÍTÉS KÉSZ! KÉRLEK INDÍTSD ÚJRA A RASPBERRY-T:"
+echo "   sudo reboot"
 echo "=================================================="
