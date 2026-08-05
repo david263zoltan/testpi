@@ -52,7 +52,7 @@ HTML_UI = """
     </style>
 </head>
 <body>
-    <h1>🛰️ Jarvis Node v6.7</h1>
+    <h1>🛰️ Jarvis Node v7.0</h1>
     
     <div class="card">
         <h3>Hálózati Beállítások</h3>
@@ -66,14 +66,12 @@ HTML_UI = """
 
     <div class="card">
         <h3>Stream Vezérlés</h3>
-        
         <div>
             <span>📹 Videó & Mélység: </span>
             <a href="/toggle/video" class="btn {{ 'btn-on' if config.video_active else 'btn-off' }}">
                 {{ 'AKTÍV' if config.video_active else 'KIKAPCSOLVA' }}
             </a>
         </div>
-
         <div>
             <span>🎙️ Audió (Mikrofon): </span>
             <a href="/toggle/audio" class="btn {{ 'btn-on' if config.audio_active else 'btn-off' }}">
@@ -113,26 +111,24 @@ def toggle_stream(stream_type):
 def run_web_server():
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
-# --- KINECT ADATFOLYAM ---
+# --- INTELLIGENS KINECT ADATFOLYAM ---
+
+def check_usb_devices():
+    """Megvizsgálja, hogy a Kinect melyik része van bedugva az USB-re"""
+    try:
+        lsusb = subprocess.check_output("lsusb", shell=True).decode("utf-8")
+        cam_present = "045e:02ae" in lsusb
+        audio_bootloader = "045e:02ad" in lsusb
+        audio_ready = "045e:02be" in lsusb or "045e:02bf" in lsusb
+        return cam_present, audio_bootloader, audio_ready
+    except:
+        return False, False, False
 
 def streamer_loop():
-    # 1. Firmware feltöltés
-    try:
-        subprocess.run(["sudo", "/usr/local/bin/kinect_upload_fw", "/lib/firmware/kinect/UACFirmware"], check=False)
-        time.sleep(1) # Várunk, hogy az ALSA regisztrálja a kártyát
-    except: pass
-
     ctx = zmq.Context()
     p = pyaudio.PyAudio()
     audio_stream = None
-
-    def get_audio_stream():
-        """Hibatűrő mikrofon nyitás"""
-        try:
-            return p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
-        except Exception as err:
-            print(f"[AUDIO WARNING] Mikrofon nem érhető el: {err}")
-            return None
+    socket = None
 
     def create_socket():
         cfg = load_config()
@@ -143,46 +139,69 @@ def streamer_loop():
     socket = create_socket()
     print("[STREAM] Adatküldő üzemkész...")
 
+    last_usb_check = 0
+    cam_ok = False
+    audio_bootloader = False
+    audio_ok = False
+
     while True:
         cfg = load_config()
+        now = time.time()
 
+        # 1. IP VÁLTÁS
         if reconnect_event.is_set():
             socket.close()
             socket = create_socket()
             reconnect_event.clear()
 
-        # Megpróbáljuk megnyitni a mikrofont, ha aktív, de még nincs megnyitva
-        if cfg['audio_active'] and audio_stream is None:
-            audio_stream = get_audio_stream()
+        # 2. USB HARDVER ÉSZLELÉS (3 másodpercenként)
+        if now - last_usb_check > 3.0:
+            cam_ok, audio_bootloader, audio_ok = check_usb_devices()
+            last_usb_check = now
 
-        try:
-            # --- VIDEÓ RÉSZ ---
-            if cfg['video_active']:
+            # Ha látja a Bootloadert (02ad), AZONNAL feltölti a firmware-t!
+            if audio_bootloader and not audio_ok:
+                print("[KINECT ÉSZLELVE] Audio Bootloader megtalálva! Firmware feltöltése...")
                 try:
-                    v_data = freenect.sync_get_video()
-                    d_data = freenect.sync_get_depth()
-                    if v_data and d_data:
-                        _, img_enc = cv2.imencode('.jpg', v_data[0], [cv2.IMWRITE_JPEG_QUALITY, 70])
-                        socket.send_multipart([b"video", img_enc.tobytes()])
-                        socket.send_multipart([b"depth", d_data[0].tobytes()])
-                except Exception as v_err:
-                    print(f"[VIDEO ERROR] Kinect videó hiba: {v_err}")
+                    subprocess.run(["sudo", "/usr/local/bin/kinect_upload_fw", "/lib/firmware/kinect/UACFirmware"], check=False)
+                    time.sleep(1)
+                except: pass
 
-            # --- AUDIÓ RÉSZ ---
-            if cfg['audio_active'] and audio_stream is not None:
+        # 3. KAMERA STREAM (Csak ha a kamera fizikai USB-n észlelve van!)
+        if cfg['video_active'] and cam_ok:
+            try:
+                v_data = freenect.sync_get_video()
+                d_data = freenect.sync_get_depth()
+                if v_data and d_data:
+                    _, img_enc = cv2.imencode('.jpg', v_data[0], [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    socket.send_multipart([b"video", img_enc.tobytes()])
+                    socket.send_multipart([b"depth", d_data[0].tobytes()])
+            except Exception as e:
+                # Ha véletlenül kirepül az USB, nem spameljük a képernyőt
+                cam_ok = False
+                time.sleep(0.5)
+
+        # 4. MIKROFON STREAM (Csak ha az audió hardver kész és aktív!)
+        if cfg['audio_active'] and audio_ok:
+            if audio_stream is None:
+                try:
+                    audio_stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
+                    print("[AUDIO ÉSZLELVE] Mikrofon megnyitva.")
+                except:
+                    audio_stream = None
+
+            if audio_stream is not None:
                 try:
                     audio_data = audio_stream.read(1024, exception_on_overflow=False)
                     socket.send_multipart([b"audio", audio_data])
-                except Exception as a_err:
-                    print(f"[AUDIO ERROR] Mikrofon olvasási hiba: {a_err}")
-                    audio_stream = None # Ha megszakad, újrapróbáljuk a következő körben
+                except:
+                    audio_stream = None
+        else:
+            audio_stream = None
 
-            if not cfg['video_active'] and not cfg['audio_active']:
-                time.sleep(0.5)
-
-        except Exception as e:
-            print(f"[ERROR] Stream hiba: {e}")
-            time.sleep(1)
+        # Ha nincs bedugva Kinect, csendben pihenünk (0% CPU, 0 hibaüzenet)
+        if not cam_ok and not audio_bootloader:
+            time.sleep(0.5)
 
         time.sleep(0.01)
 
