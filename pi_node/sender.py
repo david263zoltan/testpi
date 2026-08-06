@@ -10,7 +10,7 @@ import subprocess
 import threading
 from flask import Flask, request, render_template_string, redirect
 
-# --- KONFIGURÁCIÓ KEZELÉSE ---
+# --- KONFIGURÁCIÓ ---
 CONFIG_FILE = "config.json"
 reconnect_event = threading.Event()
 
@@ -41,47 +41,40 @@ HTML_UI = """
 <head>
     <title>Jarvis Node Control</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #121212; color: white; text-align: center; padding: 20px; }
-        .card { background: #1e1e1e; padding: 20px; border-radius: 15px; display: inline-block; border: 1px solid #00adb5; min-width: 300px; margin: 10px; }
-        input[type=text] { padding: 10px; border-radius: 5px; border: 1px solid #333; background: #000; color: white; width: 200px; }
-        .btn { padding: 10px 20px; border-radius: 5px; border: none; font-weight: bold; cursor: pointer; text-decoration: none; display: inline-block; margin: 10px; color: black; }
-        .btn-save { background: #00adb5; }
+        body { font-family: sans-serif; background: #121212; color: white; text-align: center; padding: 20px; }
+        .card { background: #1e1e1e; padding: 20px; border-radius: 15px; display: inline-block; border: 1px solid #00adb5; min-width: 320px; }
+        input { padding: 10px; border-radius: 5px; border: 1px solid #333; background: #000; color: white; margin-bottom: 10px; width: 80%; }
+        .btn { padding: 12px 24px; border-radius: 5px; border: none; font-weight: bold; cursor: pointer; text-decoration: none; display: inline-block; margin: 5px; color: black; }
+        .btn-save { background: #00adb5; width: 85%; }
         .btn-on { background: #28a745; color: white; }
         .btn-off { background: #dc3545; color: white; }
-        .status-box { margin-top: 15px; padding: 10px; border-radius: 5px; background: #222; font-size: 0.9em; }
+        .status { color: #888; font-size: 0.8em; margin-top: 15px; }
     </style>
 </head>
 <body>
-    <h1>🛰️ Jarvis Node v7.0</h1>
-    
     <div class="card">
-        <h3>Hálózati Beállítások</h3>
+        <h1>🛰️ Jarvis Node v8.3</h1>
         <form action="/save_ip" method="post">
             <input type="text" name="pc_ip" value="{{ config.pc_ip }}">
-            <button type="submit" class="btn btn-save">IP Mentése</button>
+            <button type="submit" class="btn btn-save">IP FRISSÍTÉSE</button>
         </form>
-    </div>
-
-    <br>
-
-    <div class="card">
-        <h3>Stream Vezérlés</h3>
+        <hr style="border: 0.5px solid #333; margin: 20px 0;">
         <div>
-            <span>📹 Videó & Mélység: </span>
+            <span>📹 Videó: </span>
             <a href="/toggle/video" class="btn {{ 'btn-on' if config.video_active else 'btn-off' }}">
-                {{ 'AKTÍV' if config.video_active else 'KIKAPCSOLVA' }}
+                {{ 'AKTÍV' if config.video_active else 'KI' }}
             </a>
         </div>
         <div>
-            <span>🎙️ Audió (Mikrofon): </span>
+            <span>🎙️ Audió: </span>
             <a href="/toggle/audio" class="btn {{ 'btn-on' if config.audio_active else 'btn-off' }}">
-                {{ 'AKTÍV' if config.audio_active else 'KIKAPCSOLVA' }}
+                {{ 'AKTÍV' if config.audio_active else 'KI' }}
             </a>
         </div>
-    </div>
-
-    <div class="status-box">
-        PC Kapcsolat: tcp://{{ config.pc_ip }}:{{ config.port }}
+        <div class="status">
+            Cél: tcp://{{ config.pc_ip }}:{{ config.port }}<br>
+            Firmware: Rendszerszintű (udev)
+        </div>
     </div>
 </body>
 </html>
@@ -101,28 +94,23 @@ def save_ip():
 @app.route('/toggle/<stream_type>')
 def toggle_stream(stream_type):
     config = load_config()
-    if stream_type == "video":
-        config['video_active'] = not config['video_active']
-    elif stream_type == "audio":
-        config['audio_active'] = not config['audio_active']
+    if stream_type == "video": config['video_active'] = not config['video_active']
+    elif stream_type == "audio": config['audio_active'] = not config['audio_active']
     save_config(config)
     return redirect('/')
 
-def run_web_server():
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+# --- ADATFOLYAM KEZELŐ ---
 
-# --- INTELLIGENS KINECT ADATFOLYAM ---
-
-def check_usb_devices():
-    """Megvizsgálja, hogy a Kinect melyik része van bedugva az USB-re"""
+def check_usb_status():
+    """Lusb segítségével ellenőrzi az eszköz állapotát (nem foglalja le a portot)"""
     try:
         lsusb = subprocess.check_output("lsusb", shell=True).decode("utf-8")
-        cam_present = "045e:02ae" in lsusb
-        audio_bootloader = "045e:02ad" in lsusb
+        cam_ready = "045e:02ae" in lsusb
+        # 02be vagy 02bf jelenti, hogy a firmware sikeresen beépült
         audio_ready = "045e:02be" in lsusb or "045e:02bf" in lsusb
-        return cam_present, audio_bootloader, audio_ready
+        return cam_ready, audio_ready
     except:
-        return False, False, False
+        return False, False
 
 def streamer_loop():
     ctx = zmq.Context()
@@ -130,81 +118,85 @@ def streamer_loop():
     audio_stream = None
     socket = None
 
-    def create_socket():
+    def get_socket():
         cfg = load_config()
         s = ctx.socket(zmq.PUB)
+        s.setsockopt(zmq.SNDHWM, 1) # Csak a legfrissebb adatot küldjük
         s.connect(f"tcp://{cfg['pc_ip']}:{cfg['port']}")
         return s
 
-    socket = create_socket()
-    print("[STREAM] Adatküldő üzemkész...")
+    socket = get_socket()
+    print("[SYSTEM] Node elindult, várakozás a PC-re...")
 
-    last_usb_check = 0
-    cam_ok = False
-    audio_bootloader = False
-    audio_ok = False
+    last_check_time = 0
+    cam_ok, audio_ok = False, False
 
     while True:
-        cfg = load_config()
         now = time.time()
+        cfg = load_config()
 
-        # 1. IP VÁLTÁS
+        # 1. IP váltás kezelése
         if reconnect_event.is_set():
+            print("[SYSTEM] IP cím változott, újracsatlakozás...")
             socket.close()
-            socket = create_socket()
+            socket = get_socket()
             reconnect_event.clear()
 
-        # 2. USB HARDVER ÉSZLELÉS (3 másodpercenként)
-        if now - last_usb_check > 3.0:
-            cam_ok, audio_bootloader, audio_ok = check_usb_devices()
-            last_usb_check = now
+        # 2. Hardver állapot ellenőrzése 2 másodpercenként
+        if now - last_check_time > 2.0:
+            cam_ok, audio_ok = check_usb_status()
+            last_check_time = now
 
-            # Ha látja a Bootloadert (02ad), AZONNAL feltölti a firmware-t!
-            if audio_bootloader and not audio_ok:
-                print("[KINECT ÉSZLELVE] Audio Bootloader megtalálva! Firmware feltöltése...")
-                try:
-                    subprocess.run(["sudo", "/usr/local/bin/kinect_upload_fw", "/lib/firmware/kinect/UACFirmware"], check=False)
-                    time.sleep(1)
-                except: pass
-
-        # 3. KAMERA STREAM (Csak ha a kamera fizikai USB-n észlelve van!)
+        # 3. KAMERA STREAM
         if cfg['video_active'] and cam_ok:
             try:
-                v_data = freenect.sync_get_video()
-                d_data = freenect.sync_get_depth()
-                if v_data and d_data:
-                    _, img_enc = cv2.imencode('.jpg', v_data[0], [cv2.IMWRITE_JPEG_QUALITY, 70])
+                # sync_get_video() -> (data, timestamp)
+                v_data, _ = freenect.sync_get_video()
+                d_data, _ = freenect.sync_get_depth()
+                
+                if v_data is not None:
+                    _, img_enc = cv2.imencode('.jpg', v_data, [cv2.IMWRITE_JPEG_QUALITY, 60])
                     socket.send_multipart([b"video", img_enc.tobytes()])
-                    socket.send_multipart([b"depth", d_data[0].tobytes()])
-            except Exception as e:
-                # Ha véletlenül kirepül az USB, nem spameljük a képernyőt
-                cam_ok = False
-                time.sleep(0.5)
+                
+                if d_data is not None:
+                    socket.send_multipart([b"depth", d_data.tobytes()])
+            except Exception:
+                cam_ok = False # Ha hiba van, valószínűleg kihúzták
 
-        # 4. MIKROFON STREAM (Csak ha az audió hardver kész és aktív!)
+        # 4. AUDIO STREAM
         if cfg['audio_active'] and audio_ok:
             if audio_stream is None:
                 try:
                     audio_stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
-                    print("[AUDIO ÉSZLELVE] Mikrofon megnyitva.")
+                    print("[AUDIO] Mikrofon aktiválva.")
                 except:
                     audio_stream = None
-
-            if audio_stream is not None:
+            
+            if audio_stream:
                 try:
-                    audio_data = audio_stream.read(1024, exception_on_overflow=False)
-                    socket.send_multipart([b"audio", audio_data])
+                    a_data = audio_stream.read(1024, exception_on_overflow=False)
+                    socket.send_multipart([b"audio", a_data])
                 except:
+                    audio_stream.close()
                     audio_stream = None
         else:
-            audio_stream = None
+            # Ha kikapcsoltuk vagy eltűnt a hardver, zárjuk be a streamet
+            if audio_stream:
+                try: audio_stream.close()
+                except: pass
+                audio_stream = None
 
-        # Ha nincs bedugva Kinect, csendben pihenünk (0% CPU, 0 hibaüzenet)
-        if not cam_ok and not audio_bootloader:
-            time.sleep(0.5)
-
-        time.sleep(0.01)
+        # 5. CPU kímélés
+        if not cam_ok and not audio_ok:
+            time.sleep(1) # Ha semmi nincs bedugva, pihenjen a proci
+        else:
+            time.sleep(0.005)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_web_server, daemon=True).start()
-    streamer_loop()
+    # Flask indítása külön szálon
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False), daemon=True).start()
+    # Adatküldés indítása a főszálon
+    try:
+        streamer_loop()
+    except KeyboardInterrupt:
+        print("\n[SYSTEM] Leállítás...")
